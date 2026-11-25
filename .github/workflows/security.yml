@@ -47,13 +47,16 @@ jobs:
       # ---- 1. Secrets: any finding fails -------------------------------
       # Binary download verified against the published SHA-256 instead of a
       # marketplace action (no licence key needed, one less third party).
-      - name: Secrets gate (Gitleaks, full history)
+      # --log-opts=HEAD scans only history reachable from the commit under
+      # test. Without it Gitleaks scans all refs, so one leaked branch fails
+      # every other branch (found during demo D3).
+      - name: Secrets gate (Gitleaks, full history of this commit)
         run: |
           curl -sSfL -o gitleaks.tgz \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           echo "${GITLEAKS_SHA256}  gitleaks.tgz" | sha256sum --check --strict
           tar xzf gitleaks.tgz gitleaks
-          ./gitleaks git --redact --verbose --exit-code 1 \
+          ./gitleaks git --redact --verbose --exit-code 1 --log-opts="HEAD" \
             --report-format sarif --report-path reports/gitleaks.sarif .
 
       # ---- 2. SAST ------------------------------------------------------
@@ -69,19 +72,18 @@ jobs:
       - name: SAST report (all severities, warnings only)
         if: always()
         run: |
-          mkdir -p reports
           semgrep scan --metrics=off --disable-version-check \
             --config rules/semgrep --config rules/vendor \
             --sarif --output reports/semgrep.sarif app.py seed.py || true
           bandit -r app.py seed.py -f json -o reports/bandit.json --exit-zero
 
-      # ---- 3. SCA: any known vulnerability with a fix fails -------------
+      # ---- 3. SCA: any known vulnerability fails ------------------------
       # requirements.txt pins every runtime package (transitives included),
       # so --no-deps audits exactly what is deployed.
       - name: SCA gate (pip-audit)
         run: |
           pip-audit -r requirements.txt --disable-pip --no-deps \
-            --format json --output reports/pip-audit.json
+            --format json --output reports/pip-audit.json || true
           pip-audit -r requirements.txt --disable-pip --no-deps
 
       # ---- 4. Custom business-logic and authorisation tests -------------

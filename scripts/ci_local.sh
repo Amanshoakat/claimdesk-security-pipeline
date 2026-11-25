@@ -17,7 +17,7 @@ gate() {
 }
 
 gate "Secrets (Gitleaks, full history)" \
-  gitleaks git --redact --verbose --exit-code 1 --report-format json --report-path reports/gitleaks.json .
+  gitleaks git --redact --verbose --exit-code 1 --log-opts=HEAD --report-format json --report-path reports/gitleaks.json .
 gate "SAST Semgrep (ERROR fails)" \
   semgrep scan --metrics=off --disable-version-check --config rules/semgrep --config rules/vendor --severity ERROR --error app.py seed.py
 gate "SAST Bandit (HIGH sev, MED+ conf)" \
