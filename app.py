@@ -240,7 +240,7 @@ def export_claims():
         query += " WHERE owner_id = ?"
         params = (user["id"],)
     out = io.StringIO()
-    # nosemgrep: python.lang.security.use-defusedcsv.use-defusedcsv -- cells are neutralised by csv_safe(); owner: dev lead; review 2027-03-01
+    # nosemgrep: rules.vendor.python.lang.security.use-defusedcsv -- cells are neutralised by csv_safe(); owner: dev lead; review 2027-03-01
     writer = csv.writer(out)
     writer.writerow(["id", "description", "amount", "expense_date", "status"])
     for row in get_db().execute(query, params):
