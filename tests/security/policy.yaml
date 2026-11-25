@@ -28,3 +28,6 @@ rules:
   - {id: AC-14, who: alice, method: GET,  path: /admin/users, expect: 403, forbid_body: "alice,staff", cwe: CWE-862, wstg: WSTG-ATHZ-02}
   - {id: AC-15, who: mia,   method: GET,  path: /admin/users, expect: 403, forbid_body: "alice,staff", cwe: CWE-863, wstg: WSTG-ATHZ-02}
   - {id: AC-16, who: fin,   method: GET,  path: /admin/users, expect: 200, require_body: "alice,staff", cwe: CWE-862, wstg: WSTG-ATHZ-02}
+  # Claim creation (gap found by the route-inventory test RI-01)
+  - {id: AC-17, who: anon,  method: POST, path: /claims/new, data: {description: anon claim, amount: "5.00", expense_date: "2026-10-01"}, expect: [302, 400], then: {claim: 4, status: approved}, cwe: CWE-862, wstg: WSTG-ATHZ-02}
+  - {id: AC-18, who: bob,   method: POST, path: /claims/new, data: {description: BOB-NEW taxi, amount: "12.00", expense_date: "2026-10-01"}, expect: 302, then: {claim: 5, owner_id: 2}, cwe: CWE-639, wstg: WSTG-ATHZ-04}
