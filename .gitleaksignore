@@ -1,0 +1,2 @@
+# EX-01: baseline Flask key, removed and replaced by env var. See SECURITY-EXCEPTIONS.md. Review 2027-03-01
+c95010b4ecd9cafb23aa6c8286a2be9f958f45dd:app.py:generic-api-key:41
