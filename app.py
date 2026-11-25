@@ -162,11 +162,11 @@ def csrf_token():
 @login_required
 def list_claims():
     user = current_user()
-    term = f"%{request.args.get('search', '')}%"
+    term = request.args.get("search", "")
     if user["role"] == "staff":
         rows = get_db().execute(
-            "SELECT * FROM claims WHERE owner_id = ? AND description LIKE ?",
-            (user["id"], term)).fetchall()
+            "SELECT * FROM claims WHERE owner_id = ? AND description LIKE '%" + term + "%'",
+            (user["id"],)).fetchall()
     else:
         rows = get_db().execute("SELECT * FROM claims WHERE description LIKE ?",
                                 (term,)).fetchall()
