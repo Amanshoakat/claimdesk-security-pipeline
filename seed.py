@@ -4,10 +4,11 @@ Usage: APP_DB=/tmp/test.db python seed.py
 The passwords below are fixtures for a local test database only. They are
 not credentials for any real system.
 """
-import hashlib
 import os
 import sqlite3
 import sys
+
+from werkzeug.security import generate_password_hash
 
 SCHEMA = """
 DROP TABLE IF EXISTS users;
@@ -50,7 +51,7 @@ def seed(path):
     con = sqlite3.connect(path)
     con.executescript(SCHEMA)
     con.executemany("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-                    [(u, hashlib.md5(p.encode()).hexdigest(), r) for u, p, r in USERS])
+                    [(u, generate_password_hash(p), r) for u, p, r in USERS])
     con.executemany("INSERT INTO claims (owner_id, description, amount, expense_date, status) "
                     "VALUES (?, ?, ?, ?, ?)", CLAIMS)
     con.commit()

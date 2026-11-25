@@ -13,18 +13,17 @@ Business policy (the source of truth for the custom security tests):
   P7  The user administration page is for the finance role only.
 """
 import csv
-import hashlib
 import io
 import os
 import secrets
 import sqlite3
-import subprocess
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from functools import wraps
 
 from flask import (Flask, Response, abort, g, redirect, render_template_string,
                    request, session, url_for)
+from werkzeug.security import check_password_hash
 
 MAX_CLAIM = Decimal("2000.00")
 EDITABLE_FIELDS = ("description", "amount", "expense_date")
@@ -36,9 +35,14 @@ PAGE = """<!doctype html><title>ClaimDesk</title>
 
 app = Flask(__name__)
 app.config.update(
+    # Secret comes from the environment. A random fallback keeps tests and
+    # local runs working without ever committing a key.
+    SECRET_KEY=os.environ.get("CLAIMDESK_SECRET_KEY") or secrets.token_hex(32),
     DATABASE=os.environ.get("APP_DB", "claimdesk.db"),
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SECURE=os.environ.get("CLAIMDESK_INSECURE_COOKIES") != "1",
+    SESSION_COOKIE_SAMESITE="Lax",
 )
-app.secret_key = "9f4c2e8b7a1d6053e2c9b84f1a7d3e60"
 
 
 # ---------------------------------------------------------------- database
@@ -90,21 +94,47 @@ def load_claim_for(user, claim_id):
     claim = get_db().execute("SELECT * FROM claims WHERE id = ?", (claim_id,)).fetchone()
     if claim is None:
         abort(404)
+    if user["role"] == "staff" and claim["owner_id"] != user["id"]:
+        abort(403)
     return claim
 
 
 def validate_claim_fields(form):
     """Business rules P4. Returns (clean_values, error)."""
     try:
-        amount = float(form.get("amount", ""))
+        amount = Decimal(form.get("amount", ""))
+    except (InvalidOperation, ValueError):
+        return None, "amount must be a number"
+    if not amount.is_finite() or amount <= 0 or amount > MAX_CLAIM:
+        return None, "amount must be between 0.01 and 2000.00"
+    if amount != amount.quantize(Decimal("0.01")):
+        return None, "amount has more than two decimal places"
+    try:
         expense_date = date.fromisoformat(form.get("expense_date", ""))
     except ValueError:
-        return None, "amount and expense_date are required"
+        return None, "expense_date must be YYYY-MM-DD"
+    if expense_date > date.today():
+        return None, "expense_date cannot be in the future"
     description = form.get("description", "").strip()[:200]
     if not description:
         return None, "description is required"
     return {"description": description, "amount": str(amount),
             "expense_date": expense_date.isoformat()}, None
+
+
+def csv_safe(value):
+    """Neutralise spreadsheet formula injection (CWE-1236) in exported cells."""
+    text = str(value)
+    return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
+
+
+@app.before_request
+def csrf_protect():
+    """Synchroniser-token CSRF check on every state-changing request."""
+    if request.method == "POST" and request.endpoint != "login":
+        token = session.get("csrf")
+        if not token or not secrets.compare_digest(token, request.form.get("csrf", "")):
+            abort(400)
 
 
 # ------------------------------------------------------------------ routes
@@ -113,23 +143,33 @@ def login():
     if request.method == "POST":
         user = get_db().execute("SELECT * FROM users WHERE username = ?",
                                 (request.form.get("username", ""),)).fetchone()
-        supplied = hashlib.md5(request.form.get("password", "").encode()).hexdigest()
-        if user and user["password_hash"] == supplied:
+        if user and check_password_hash(user["password_hash"], request.form.get("password", "")):
+            session.clear()
             session["uid"] = user["id"]
+            session["csrf"] = secrets.token_urlsafe(32)
             return redirect(url_for("list_claims"))
         return "invalid credentials", 401
     return "login form"
+
+
+@app.route("/csrf")
+@login_required
+def csrf_token():
+    return session["csrf"]
 
 
 @app.route("/claims")
 @login_required
 def list_claims():
     user = current_user()
-    term = request.args.get("search", "")
-    query = "SELECT * FROM claims WHERE description LIKE '%" + term + "%'"
+    term = f"%{request.args.get('search', '')}%"
     if user["role"] == "staff":
-        query += " AND owner_id = " + str(user["id"])
-    rows = get_db().execute(query).fetchall()
+        rows = get_db().execute(
+            "SELECT * FROM claims WHERE owner_id = ? AND description LIKE ?",
+            (user["id"], term)).fetchall()
+    else:
+        rows = get_db().execute("SELECT * FROM claims WHERE description LIKE ?",
+                                (term,)).fetchall()
     return render_template_string(PAGE, claims=rows, message="")
 
 
@@ -158,22 +198,33 @@ def view_claim(claim_id):
 @app.route("/claims/<int:claim_id>/edit", methods=["POST"])
 @login_required
 def edit_claim(claim_id):
-    load_claim_for(current_user(), claim_id)
-    fields = {k: v for k, v in request.form.items() if k != "csrf"}
-    assignments = ", ".join(f"{k} = ?" for k in fields)
+    user = current_user()
+    claim = load_claim_for(user, claim_id)
+    if claim["owner_id"] != user["id"]:
+        abort(403)
+    if claim["status"] != "pending":
+        return "only pending claims can be edited", 409
+    values, error = validate_claim_fields(request.form)
+    if error:
+        return error, 400
     db = get_db()
-    db.execute(f"UPDATE claims SET {assignments} WHERE id = ?", (*fields.values(), claim_id))
+    db.execute("UPDATE claims SET description = ?, amount = ?, expense_date = ? WHERE id = ?",
+               (values["description"], values["amount"], values["expense_date"], claim_id))
     db.commit()
     return redirect(url_for("view_claim", claim_id=claim_id))
 
 
 @app.route("/claims/<int:claim_id>/<any(approve, reject):decision>", methods=["POST"])
-@login_required
+@role_required("manager")
 def decide_claim(claim_id, decision):
     user = current_user()
-    load_claim_for(user, claim_id)
+    claim = load_claim_for(user, claim_id)
+    if claim["owner_id"] == user["id"]:
+        abort(403)  # P3: no self-approval
+    if claim["status"] != "pending":
+        return "claim already decided", 409
     db = get_db()
-    db.execute("UPDATE claims SET status = ?, approver_id = ? WHERE id = ?",
+    db.execute("UPDATE claims SET status = ?, approver_id = ? WHERE id = ? AND status = 'pending'",
                ("approved" if decision == "approve" else "rejected", user["id"], claim_id))
     db.commit()
     return redirect(url_for("view_claim", claim_id=claim_id))
@@ -182,23 +233,27 @@ def decide_claim(claim_id, decision):
 @app.route("/claims/export")
 @login_required
 def export_claims():
-    label = request.args.get("label", "claims")
-    path = f"/tmp/claimdesk-{label}.csv"
-    with open(path, "w", newline="") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(["id", "description", "amount", "expense_date", "status"])
-        for row in get_db().execute("SELECT id, description, amount, expense_date, status FROM claims"):
-            writer.writerow(list(row))
-    subprocess.run(f"gzip -kf {path}", shell=True)
-    with open(path) as fh:
-        return Response(fh.read(), mimetype="text/csv")
+    user = current_user()
+    query = "SELECT id, description, amount, expense_date, status FROM claims"
+    params = ()
+    if user["role"] == "staff":
+        query += " WHERE owner_id = ?"
+        params = (user["id"],)
+    out = io.StringIO()
+    # nosemgrep: python.lang.security.use-defusedcsv.use-defusedcsv -- cells are neutralised by csv_safe(); owner: dev lead; review 2027-03-01
+    writer = csv.writer(out)
+    writer.writerow(["id", "description", "amount", "expense_date", "status"])
+    for row in get_db().execute(query, params):
+        writer.writerow([csv_safe(v) for v in row])
+    return Response(out.getvalue(), mimetype="text/csv")
 
 
 @app.route("/admin/users")
+@role_required("finance")
 def admin_users():
     rows = get_db().execute("SELECT id, username, role FROM users").fetchall()
     return "\n".join(f"{r['id']},{r['username']},{r['role']}" for r in rows)
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="127.0.0.1", port=5000)
