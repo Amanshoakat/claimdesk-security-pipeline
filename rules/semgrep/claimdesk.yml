@@ -1,0 +1,57 @@
+rules:
+  # Custom SAST rule written for this codebase. Generic rules cannot know that
+  # in ClaimDesk every route except /login must pass through one of our own
+  # authorisation decorators. This makes "forgot the decorator" a build failure.
+  - id: claimdesk-route-without-auth-decorator
+    message: >-
+      Route '$FUNC' has no @login_required or @role_required decorator. Every
+      ClaimDesk route except login must enforce authentication (policy P1-P7).
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-862: Missing Authorization"
+      owasp: "A01:2021 Broken Access Control"
+      confidence: HIGH
+    patterns:
+      - pattern: |
+          @app.route(...)
+          def $FUNC(...):
+              ...
+      - pattern-not: |
+          @app.route(...)
+          @login_required
+          def $FUNC(...):
+              ...
+      - pattern-not: |
+          @app.route(...)
+          @role_required(...)
+          def $FUNC(...):
+              ...
+      - metavariable-regex:
+          metavariable: $FUNC
+          regex: ^(?!login$).*
+
+  # Companion rule: the decision route must be restricted to managers, not
+  # merely logged in. Generic SAST has no idea who is allowed to approve.
+  - id: claimdesk-decision-route-not-manager-only
+    message: >-
+      Approve/reject handler '$FUNC' is not restricted with
+      @role_required("manager") (policy P2).
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-862: Missing Authorization"
+      confidence: HIGH
+    patterns:
+      - pattern: |
+          @app.route($PATH, ...)
+          def $FUNC(...):
+              ...
+      - metavariable-regex:
+          metavariable: $PATH
+          regex: .*(approve|reject).*
+      - pattern-not: |
+          @app.route($PATH, ...)
+          @role_required("manager")
+          def $FUNC(...):
+              ...

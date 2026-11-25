@@ -1,0 +1,99 @@
+# ClaimDesk security gate.
+# Runs on every pull request (the enforcement point: branch protection on
+# main requires the "security-gate" check), on every push to main, and weekly,
+# because new advisories are published against code that has not changed.
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read            # least privilege for GITHUB_TOKEN; nothing here writes
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
+jobs:
+  security-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # Third-party actions pinned to full commit SHAs (CVE-2025-30066 lesson:
+      # a moved tag cannot change what runs here). Comment = version checked.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0              # full history so Gitleaks sees old commits
+          persist-credentials: false  # token not left on disk for later steps
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Install app and pinned tool versions
+        run: |
+          pip install -r requirements.txt -r requirements-dev.txt
+          mkdir -p reports
+
+      # ---- 1. Secrets: any finding fails -------------------------------
+      # Binary download verified against the published SHA-256 instead of a
+      # marketplace action (no licence key needed, one less third party).
+      - name: Secrets gate (Gitleaks, full history)
+        run: |
+          curl -sSfL -o gitleaks.tgz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tgz" | sha256sum --check --strict
+          tar xzf gitleaks.tgz gitleaks
+          ./gitleaks git --redact --verbose --exit-code 1 \
+            --report-format sarif --report-path reports/gitleaks.sarif .
+
+      # ---- 2. SAST ------------------------------------------------------
+      - name: SAST gate (Semgrep, ERROR severity fails)
+        run: |
+          semgrep scan --metrics=off --disable-version-check \
+            --config rules/semgrep --config rules/vendor \
+            --severity ERROR --error app.py seed.py
+
+      - name: SAST gate (Bandit, HIGH severity with MEDIUM+ confidence fails)
+        run: bandit -r app.py seed.py --severity-level high --confidence-level medium
+
+      - name: SAST report (all severities, warnings only)
+        if: always()
+        run: |
+          mkdir -p reports
+          semgrep scan --metrics=off --disable-version-check \
+            --config rules/semgrep --config rules/vendor \
+            --sarif --output reports/semgrep.sarif app.py seed.py || true
+          bandit -r app.py seed.py -f json -o reports/bandit.json --exit-zero
+
+      # ---- 3. SCA: any known vulnerability with a fix fails -------------
+      # requirements.txt pins every runtime package (transitives included),
+      # so --no-deps audits exactly what is deployed.
+      - name: SCA gate (pip-audit)
+        run: |
+          pip-audit -r requirements.txt --disable-pip --no-deps \
+            --format json --output reports/pip-audit.json
+          pip-audit -r requirements.txt --disable-pip --no-deps
+
+      # ---- 4. Custom business-logic and authorisation tests -------------
+      - name: Custom security tests (policy matrix, business rules, workflow)
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: pytest tests/security -q --junitxml=reports/security-tests.xml
+
+      - name: Keep reports for triage
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: security-reports
+          path: reports/
+          retention-days: 30

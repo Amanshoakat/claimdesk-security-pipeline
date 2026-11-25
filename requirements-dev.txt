@@ -1,0 +1,7 @@
+# Pinned security tool versions (CI and local). Upgrade deliberately, not silently.
+bandit==1.9.4
+semgrep==1.187.0
+pip-audit==2.10.1
+pytest==9.1.1
+hypothesis==6.170.17
+pyyaml==6.0.3

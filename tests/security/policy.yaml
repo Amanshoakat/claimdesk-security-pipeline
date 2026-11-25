@@ -1,0 +1,30 @@
+# ClaimDesk access-control policy, written from policies P1-P7 in app.py.
+# Expectations come from the policy, NOT from observing the current code.
+# Seed (seed.py): users alice=1 staff, bob=2 staff, mia=3 manager, fin=4 finance
+#                 claims 1 alice pending, 2 bob pending, 3 mia pending, 4 alice approved
+# Fields:
+#   expect        HTTP status the policy requires
+#   forbid_body   marker that must NOT appear in the response (data leak check)
+#   require_body  marker that MUST appear (proves the positive case really works)
+#   then          claim state that must hold after the request (no silent change)
+rules:
+  # P1 horizontal access control (CWE-639, WSTG-ATHZ-04)
+  - {id: AC-01, who: anon,  method: GET,  path: /claims/1, expect: 302, forbid_body: ALICE-PRIVATE, cwe: CWE-862, wstg: WSTG-ATHZ-02}
+  - {id: AC-02, who: bob,   method: GET,  path: /claims/1, expect: 403, forbid_body: ALICE-PRIVATE, cwe: CWE-639, wstg: WSTG-ATHZ-04}
+  - {id: AC-03, who: alice, method: GET,  path: /claims/1, expect: 200, require_body: ALICE-PRIVATE, cwe: CWE-639, wstg: WSTG-ATHZ-04}
+  - {id: AC-04, who: mia,   method: GET,  path: /claims/1, expect: 200, require_body: ALICE-PRIVATE, cwe: CWE-639, wstg: WSTG-ATHZ-04}
+  - {id: AC-05, who: bob,   method: GET,  path: "/claims?search=PRIVATE", expect: 200, forbid_body: ALICE-PRIVATE, cwe: CWE-639, wstg: WSTG-ATHZ-04}
+  - {id: AC-06, who: bob,   method: GET,  path: /claims/export, expect: 200, forbid_body: ALICE-PRIVATE, cwe: CWE-639, wstg: WSTG-ATHZ-04}
+  - {id: AC-07, who: bob,   method: POST, path: /claims/1/edit, data: {description: hijack, amount: "1.00", expense_date: "2026-10-01"}, expect: 403, then: {claim: 1, description: ALICE-PRIVATE taxi to client}, cwe: CWE-639, wstg: WSTG-ATHZ-04}
+  # P2 vertical access control (CWE-862/863, WSTG-ATHZ-02)
+  - {id: AC-08, who: alice, method: POST, path: /claims/2/approve, expect: 403, then: {claim: 2, status: pending}, cwe: CWE-862, wstg: WSTG-ATHZ-02}
+  - {id: AC-09, who: fin,   method: POST, path: /claims/2/approve, expect: 403, then: {claim: 2, status: pending}, cwe: CWE-863, wstg: WSTG-ATHZ-02}
+  - {id: AC-10, who: anon,  method: POST, path: /claims/2/approve, expect: [302, 400], then: {claim: 2, status: pending}, cwe: CWE-862, wstg: WSTG-ATHZ-02}
+  - {id: AC-11, who: mia,   method: POST, path: /claims/2/approve, expect: 302, then: {claim: 2, status: approved}, cwe: CWE-863, wstg: WSTG-ATHZ-02}
+  # P3 separation of duties (CWE-841, WSTG-BUSL-06)
+  - {id: AC-12, who: mia,   method: POST, path: /claims/3/approve, expect: 403, then: {claim: 3, status: pending}, cwe: CWE-841, wstg: WSTG-BUSL-06}
+  # P7 privileged function (CWE-862, WSTG-ATHZ-02)
+  - {id: AC-13, who: anon,  method: GET,  path: /admin/users, expect: 302, forbid_body: "alice,staff", cwe: CWE-862, wstg: WSTG-ATHZ-02}
+  - {id: AC-14, who: alice, method: GET,  path: /admin/users, expect: 403, forbid_body: "alice,staff", cwe: CWE-862, wstg: WSTG-ATHZ-02}
+  - {id: AC-15, who: mia,   method: GET,  path: /admin/users, expect: 403, forbid_body: "alice,staff", cwe: CWE-863, wstg: WSTG-ATHZ-02}
+  - {id: AC-16, who: fin,   method: GET,  path: /admin/users, expect: 200, require_body: "alice,staff", cwe: CWE-862, wstg: WSTG-ATHZ-02}

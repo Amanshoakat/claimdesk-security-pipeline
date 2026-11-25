@@ -1,0 +1,1 @@
+Source: https://github.com/semgrep/semgrep-rules at commit a5ad1714f00c9f7fde980cab0ea1d6dc6d414fd2 (10 Nov 2026). Only python/flask and python/lang/security YAML rules are vendored. Licence: Semgrep Rules License v1.0 (see LICENSE).
