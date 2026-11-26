@@ -230,6 +230,16 @@ def decide_claim(claim_id, decision):
     return redirect(url_for("view_claim", claim_id=claim_id))
 
 
+@app.route("/claims/<int:claim_id>/receipt")
+@login_required
+def claim_receipt(claim_id):
+    # New feature: printable receipt. Loads the claim directly (no owner check).
+    claim = get_db().execute("SELECT * FROM claims WHERE id = ?", (claim_id,)).fetchone()
+    if claim is None:
+        abort(404)
+    return render_template_string(PAGE, claims=[claim], message="Receipt")
+
+
 @app.route("/claims/export")
 @login_required
 def export_claims():
