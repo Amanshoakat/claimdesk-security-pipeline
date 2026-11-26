@@ -215,12 +215,10 @@ def edit_claim(claim_id):
 
 
 @app.route("/claims/<int:claim_id>/<any(approve, reject):decision>", methods=["POST"])
-@role_required("manager")
+@login_required
 def decide_claim(claim_id, decision):
     user = current_user()
     claim = load_claim_for(user, claim_id)
-    if claim["owner_id"] == user["id"]:
-        abort(403)  # P3: no self-approval
     if claim["status"] != "pending":
         return "claim already decided", 409
     db = get_db()
